@@ -353,6 +353,7 @@ def evaluate_walk_forward(
     train_ratio: float,
     test_ratio: float,
     random_state: int,
+    max_windows: int = 0,
 ) -> Dict[str, float]:
     data = df.sort_values("open_time").reset_index(drop=True)
     n = len(data)
@@ -408,6 +409,8 @@ def evaluate_walk_forward(
 
         start_test += step
         windows += 1
+        if max_windows and windows >= max_windows:
+            break
 
     if windows == 0:
         return {
