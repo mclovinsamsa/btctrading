@@ -1,0 +1,17 @@
+{
+  "experiment_id": 61,
+  "n_rows": 74640,
+  "n_features": 24,
+  "proba_threshold": 0.52,
+  "experiment_key": "{\"data_config\": {\"atr_period\": 7, \"horizon_h\": 1, \"ma_windows\": [12, 24, 72], \"mtf_intervals\": [\"4h\"], \"ret_windows\": [1, 3, 6, 12, 24], \"rsi_period\": 7, \"target_threshold\": 0.0025, \"vol_windows\": [24, 72]}, \"model_config\": {\"colsample_bytree\": 1.0, \"gamma\": 0.0, \"learning_rate\": 0.03, \"max_depth\": 3, \"min_child_weight\": 1, \"n_estimators\": 250, \"subsample\": 0.7}, \"proba_threshold\": 0.52}",
+  "data_config": "{\"atr_period\": 7, \"horizon_h\": 1, \"ma_windows\": [12, 24, 72], \"mtf_intervals\": [\"4h\"], \"ret_windows\": [1, 3, 6, 12, 24], \"rsi_period\": 7, \"target_threshold\": 0.0025, \"vol_windows\": [24, 72]}",
+  "model_config": "{\"colsample_bytree\": 1.0, \"gamma\": 0.0, \"learning_rate\": 0.03, \"max_depth\": 3, \"min_child_weight\": 1, \"n_estimators\": 250, \"subsample\": 0.7}",
+  "nb_windows": 4,
+  "total_trades": 1830,
+  "hit_rate": 0.7038251366120218,
+  "avg_trade_return": 0.005840019292013701,
+  "strategy_factor": 40371.46576974569,
+  "market_factor": 2.7348976855640927,
+  "max_drawdown": 0.019525530434808647,
+  "objective_score": 10.8058960199872
+}
