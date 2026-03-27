@@ -1,12 +1,14 @@
 import argparse
 import itertools
 import json
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from xgboost import XGBClassifier
 
 from src.download_binance import download_full_history
@@ -346,6 +348,7 @@ def evaluate_walk_forward(
     features: List[str],
     model_params: Dict[str, float],
     proba_threshold: float,
+    device: str,
     fee_per_trade: float,
     train_ratio: float,
     test_ratio: float,
@@ -385,6 +388,8 @@ def evaluate_walk_forward(
         model = XGBClassifier(
             objective="binary:logistic",
             eval_metric="logloss",
+            tree_method="hist",
+            device=device,
             random_state=random_state,
             **model_params,
         )
@@ -457,6 +462,24 @@ def evaluate_walk_forward(
     }
 
 
+def resolve_device(requested_device: str) -> str:
+    has_cuda = bool(xgb.build_info().get("USE_CUDA", False))
+
+    if requested_device == "cpu":
+        return "cpu"
+    if requested_device == "cuda":
+        if has_cuda:
+            return "cuda"
+        warnings.warn("CUDA demandé mais indisponible dans la build XGBoost: fallback vers CPU.")
+        return "cpu"
+
+    # requested_device == "auto": prefer CUDA, fallback CPU.
+    if has_cuda:
+        return "cuda"
+    warnings.warn("CUDA indisponible: fallback vers CPU.")
+    return "cpu"
+
+
 def run_search(
     search_cfg: SearchConfig,
     out_dir: Path,
@@ -465,6 +488,7 @@ def run_search(
     max_model_combos: int,
     max_experiments: int,
     checkpoint_every: int,
+    requested_device: str,
     resume_path: Path = None,
 ) -> pd.DataFrame:
     data_paths = ensure_data(search_cfg, out_dir=out_dir, force_download=force_download)
@@ -474,6 +498,7 @@ def run_search(
 
     data_configs = generate_data_configs(search_cfg.aux_intervals)
     model_configs = generate_model_configs(max_model_combos=max_model_combos)
+    selected_device = resolve_device(requested_device)
 
     if max_data_configs and max_data_configs > 0:
         data_configs = data_configs[:max_data_configs]
@@ -482,6 +507,7 @@ def run_search(
     print(f"Data configs: {len(data_configs)}")
     print(f"Model configs: {len(model_configs)}")
     print(f"Signal thresholds: {len(PROBA_THRESHOLDS)}")
+    print(f"XGBoost device: {selected_device}")
     print(f"Planned experiments: {total_experiments}")
 
     rows = []
@@ -523,6 +549,7 @@ def run_search(
                     features=feature_cols,
                     model_params=model_cfg,
                     proba_threshold=proba_threshold,
+                    device=selected_device,
                     fee_per_trade=search_cfg.fee_per_trade,
                     train_ratio=search_cfg.train_ratio,
                     test_ratio=search_cfg.test_ratio,
@@ -534,6 +561,7 @@ def run_search(
                         "experiment_id": done,
                         "n_rows": len(dataset),
                         "n_features": len(feature_cols),
+                        "device_used": selected_device,
                         "proba_threshold": proba_threshold,
                         "experiment_key": exp_key,
                         "data_config": json.dumps(asdict(data_cfg), sort_keys=True),
@@ -580,6 +608,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-ratio", type=float, default=0.60)
     parser.add_argument("--test-ratio", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--checkpoint-every", type=int, default=100)
     parser.add_argument("--resume-path", default="", help="Path to existing checkpoint/leaderboard CSV")
     return parser.parse_args()
@@ -609,6 +638,7 @@ def main() -> None:
         max_model_combos=args.max_model_combos,
         max_experiments=args.max_experiments,
         checkpoint_every=args.checkpoint_every,
+        requested_device=args.device,
         resume_path=resume_path,
     )
 
