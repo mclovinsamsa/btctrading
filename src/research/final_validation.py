@@ -99,6 +99,10 @@ def _compute_regime_stats(df_holdout: pd.DataFrame, threshold: float, total_cost
             }
         )
 
+    if not rows:
+        return pd.DataFrame(
+            columns=["regime", "rows", "trades", "hit_rate", "avg_trade_return", "strategy_factor"]
+        )
     return pd.DataFrame(rows).sort_values("regime")
 
 
@@ -231,11 +235,15 @@ def main() -> None:
     if "close" not in dataset.columns:
         dataset = dataset.merge(base_df[["open_time", "close"]], on="open_time", how="left")
     dataset = dataset.sort_values("open_time").reset_index(drop=True)
+    if dataset.empty:
+        raise RuntimeError("Validation dataset is empty after feature engineering. Check input data alignment.")
 
     n = len(dataset)
     train_end = int(n * (1.0 - args.holdout_ratio))
     train_df = dataset.iloc[:train_end].copy()
     holdout_df = dataset.iloc[train_end:].copy()
+    if train_df.empty or holdout_df.empty:
+        raise RuntimeError("Train or holdout split is empty. Adjust holdout ratio or dataset inputs.")
 
     device = resolve_device(args.device)
     total_cost = float(args.fee + args.slippage)

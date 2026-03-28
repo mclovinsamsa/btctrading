@@ -32,6 +32,45 @@ def _to_json(x) -> str:
     return json.dumps(x, sort_keys=True)
 
 
+def _compute_robust_score(df: pd.DataFrame) -> pd.Series:
+    outperf = np.log(np.clip(df["strategy_factor"].astype(float), 1e-12, None)) - np.log(
+        np.clip(df["market_factor"].astype(float), 1e-12, None)
+    )
+    trade_bonus = np.clip(df["total_trades"].astype(float) / 2000.0, 0.0, 1.0) * 0.20
+    neg_return_penalty = np.where(df["avg_trade_return"] <= 0.0, -1.0, 0.0)
+    high_dd_penalty = np.where(df["max_drawdown"] > 0.35, -0.75, 0.0)
+
+    return (
+        outperf
+        + (30.0 * df["avg_trade_return"].astype(float))
+        + (0.8 * (df["hit_rate"].astype(float) - 0.5))
+        - (1.5 * df["max_drawdown"].astype(float))
+        + trade_bonus
+        + neg_return_penalty
+        + high_dd_penalty
+    )
+
+
+def _rank_frame(
+    df: pd.DataFrame,
+    min_threshold: float,
+    min_trades: int,
+    max_drawdown_cap: float,
+) -> pd.DataFrame:
+    out = df.copy()
+    out["robust_score"] = _compute_robust_score(out)
+    out["is_viable"] = (
+        (out["threshold"] >= min_threshold)
+        & (out["total_trades"] >= min_trades)
+        & (out["max_drawdown"] <= max_drawdown_cap)
+        & (out["avg_trade_return"] > 0.0)
+    )
+    return out.sort_values(
+        ["is_viable", "robust_score", "objective_score", "avg_trade_return"],
+        ascending=[False, False, False, False],
+    )
+
+
 def _evaluate_experiment(
     dataset: pd.DataFrame,
     features: List[str],
@@ -41,7 +80,7 @@ def _evaluate_experiment(
     device: str,
     max_windows: int,
 ) -> Dict:
-    metrics = evaluate_walk_forward(
+    return evaluate_walk_forward(
         df=dataset,
         features=features,
         model_params=model_cfg,
@@ -53,7 +92,6 @@ def _evaluate_experiment(
         random_state=search_cfg.random_state,
         max_windows=max_windows,
     )
-    return metrics
 
 
 def run_funnel(
@@ -69,6 +107,10 @@ def run_funnel(
     stage2_top_models: int,
     stage2_windows: int,
     stage3_top_pairs: int,
+    min_threshold: float,
+    min_trades: int,
+    max_drawdown_cap: float,
+    shortlist_top_k: int,
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,16 +130,13 @@ def run_funnel(
     print(f"All data configs: {len(all_data_cfgs)}")
     print(f"All model configs: {len(all_model_cfgs)}")
 
-    # Stage 1: coarse sampling + few windows
     data_idx_s1 = _pick_indices(len(all_data_cfgs), stage1_data, search_cfg.random_state)
     model_idx_s1 = _pick_indices(len(all_model_cfgs), stage1_models, search_cfg.random_state + 1)
-    thresholds_s1 = sorted(set([0.52, 0.58, 0.64]).intersection(set(PROBA_THRESHOLDS)))
+    thresholds_s1 = [x for x in [0.55, 0.60, 0.65] if x >= min_threshold]
     if not thresholds_s1:
-        thresholds_s1 = [PROBA_THRESHOLDS[0]]
+        thresholds_s1 = [min_threshold]
 
-    print(
-        f"Stage1 => data:{len(data_idx_s1)} x model:{len(model_idx_s1)} x th:{len(thresholds_s1)}"
-    )
+    print(f"Stage1 => data:{len(data_idx_s1)} x model:{len(model_idx_s1)} x th:{len(thresholds_s1)}")
 
     rows_s1: List[Dict] = []
     dataset_cache: Dict[int, Tuple[pd.DataFrame, List[str]]] = {}
@@ -114,15 +153,7 @@ def run_funnel(
             mcfg = all_model_cfgs[mi]
             for th in thresholds_s1:
                 done += 1
-                m = _evaluate_experiment(
-                    dataset=ds,
-                    features=feats,
-                    model_cfg=mcfg,
-                    proba_threshold=th,
-                    search_cfg=search_cfg,
-                    device=device,
-                    max_windows=stage1_windows,
-                )
+                m = _evaluate_experiment(ds, feats, mcfg, th, search_cfg, device, stage1_windows)
                 rows_s1.append(
                     {
                         "stage": "stage1",
@@ -142,24 +173,31 @@ def run_funnel(
     s1 = pd.DataFrame(rows_s1)
     if s1.empty:
         raise RuntimeError("Stage1 produced no results")
-
+    s1 = _rank_frame(s1, min_threshold=min_threshold, min_trades=min_trades, max_drawdown_cap=max_drawdown_cap)
     s1.to_csv(out_dir / "funnel_stage1.csv", index=False)
 
+    s1_for_select = s1[s1["is_viable"]].copy()
+    if s1_for_select.empty:
+        s1_for_select = s1.copy()
+
     top_data = (
-        s1.groupby("data_idx", as_index=False)["objective_score"].max()
-        .sort_values("objective_score", ascending=False)
+        s1_for_select.groupby("data_idx", as_index=False)["robust_score"].max()
+        .sort_values("robust_score", ascending=False)
         .head(stage2_top_data)["data_idx"]
         .tolist()
     )
     top_models = (
-        s1.groupby("model_idx", as_index=False)["objective_score"].max()
-        .sort_values("objective_score", ascending=False)
+        s1_for_select.groupby("model_idx", as_index=False)["robust_score"].max()
+        .sort_values("robust_score", ascending=False)
         .head(stage2_top_models)["model_idx"]
         .tolist()
     )
 
-    # Stage 2: focus on promising regions, medium windows
-    print(f"Stage2 => data:{len(top_data)} x model:{len(top_models)} x th:{len(PROBA_THRESHOLDS)}")
+    stage2_thresholds = [x for x in PROBA_THRESHOLDS if x >= min_threshold]
+    if not stage2_thresholds:
+        stage2_thresholds = [min_threshold]
+    print(f"Stage2 => data:{len(top_data)} x model:{len(top_models)} x th:{len(stage2_thresholds)}")
+
     rows_s2: List[Dict] = []
     done = 0
 
@@ -174,17 +212,9 @@ def run_funnel(
 
         for mi in top_models:
             mcfg = all_model_cfgs[mi]
-            for th in PROBA_THRESHOLDS:
+            for th in stage2_thresholds:
                 done += 1
-                m = _evaluate_experiment(
-                    dataset=ds,
-                    features=feats,
-                    model_cfg=mcfg,
-                    proba_threshold=th,
-                    search_cfg=search_cfg,
-                    device=device,
-                    max_windows=stage2_windows,
-                )
+                m = _evaluate_experiment(ds, feats, mcfg, th, search_cfg, device, stage2_windows)
                 rows_s2.append(
                     {
                         "stage": "stage2",
@@ -204,16 +234,21 @@ def run_funnel(
     s2 = pd.DataFrame(rows_s2)
     if s2.empty:
         raise RuntimeError("Stage2 produced no results")
+    s2 = _rank_frame(s2, min_threshold=min_threshold, min_trades=min_trades, max_drawdown_cap=max_drawdown_cap)
     s2.to_csv(out_dir / "funnel_stage2.csv", index=False)
 
-    # Stage 3: full validation on finalists + finer threshold search
+    s2_for_select = s2[s2["is_viable"]].copy()
+    if s2_for_select.empty:
+        s2_for_select = s2.copy()
+
     finalists = (
-        s2.sort_values("objective_score", ascending=False)
+        s2_for_select.sort_values("robust_score", ascending=False)
         .head(stage3_top_pairs)[["data_idx", "model_idx"]]
         .drop_duplicates()
         .to_dict("records")
     )
-    fine_thresholds = [round(x, 2) for x in np.arange(0.50, 0.701, 0.01)]
+    fine_start = max(0.50, min_threshold)
+    fine_thresholds = [round(x, 2) for x in np.arange(fine_start, 0.701, 0.01)]
 
     print(f"Stage3 => pairs:{len(finalists)} x fine_thresholds:{len(fine_thresholds)}")
     rows_s3: List[Dict] = []
@@ -222,7 +257,6 @@ def run_funnel(
     for pair in finalists:
         di = int(pair["data_idx"])
         mi = int(pair["model_idx"])
-
         dcfg = all_data_cfgs[di]
         mcfg = all_model_cfgs[mi]
 
@@ -235,15 +269,7 @@ def run_funnel(
 
         for th in fine_thresholds:
             done += 1
-            m = _evaluate_experiment(
-                dataset=ds,
-                features=feats,
-                model_cfg=mcfg,
-                proba_threshold=th,
-                search_cfg=search_cfg,
-                device=device,
-                max_windows=0,
-            )
+            m = _evaluate_experiment(ds, feats, mcfg, th, search_cfg, device, 0)
             rows_s3.append(
                 {
                     "stage": "stage3",
@@ -263,26 +289,29 @@ def run_funnel(
     s3 = pd.DataFrame(rows_s3)
     if s3.empty:
         raise RuntimeError("Stage3 produced no results")
-
-    s3 = s3.sort_values(
-        ["objective_score", "strategy_factor", "avg_trade_return", "hit_rate"],
-        ascending=False,
-    )
+    s3 = _rank_frame(s3, min_threshold=min_threshold, min_trades=min_trades, max_drawdown_cap=max_drawdown_cap)
 
     s3.to_csv(out_dir / "funnel_leaderboard.csv", index=False)
-    best = s3.iloc[0].to_dict()
+    top_pool = s3[s3["is_viable"]].copy()
+    if top_pool.empty:
+        top_pool = s3.copy()
+    best = top_pool.iloc[0].to_dict()
     with open(out_dir / "funnel_best_config.json", "w", encoding="utf-8") as f:
         json.dump(best, f, indent=2)
+    top_pool.head(shortlist_top_k).to_csv(out_dir / "funnel_shortlist_topk.csv", index=False)
 
     print("\n=== Funnel Top 20 ===")
     print(
         s3[
             [
                 "objective_score",
+                "robust_score",
+                "is_viable",
                 "strategy_factor",
                 "market_factor",
                 "hit_rate",
                 "avg_trade_return",
+                "max_drawdown",
                 "total_trades",
                 "threshold",
                 "n_features",
@@ -313,6 +342,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage2-windows", type=int, default=4)
 
     parser.add_argument("--stage3-top-pairs", type=int, default=30)
+    parser.add_argument("--min-threshold", type=float, default=0.55)
+    parser.add_argument("--min-trades", type=int, default=800)
+    parser.add_argument("--max-drawdown-cap", type=float, default=0.35)
+    parser.add_argument("--shortlist-top-k", type=int, default=10)
 
     parser.add_argument("--fee", type=float, default=0.0004)
     parser.add_argument("--train-ratio", type=float, default=0.60)
@@ -348,6 +381,10 @@ def main() -> None:
         stage2_top_models=args.stage2_top_models,
         stage2_windows=args.stage2_windows,
         stage3_top_pairs=args.stage3_top_pairs,
+        min_threshold=args.min_threshold,
+        min_trades=args.min_trades,
+        max_drawdown_cap=args.max_drawdown_cap,
+        shortlist_top_k=args.shortlist_top_k,
     )
 
 
