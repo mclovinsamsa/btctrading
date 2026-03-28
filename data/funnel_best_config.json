@@ -1,0 +1,18 @@
+{
+  "stage": "stage3",
+  "data_idx": 6939,
+  "model_idx": 51,
+  "threshold": 0.5,
+  "n_rows": 74929,
+  "n_features": 27,
+  "data_config": "{\"atr_period\": 7, \"horizon_h\": 6, \"ma_windows\": [12, 24, 72], \"mtf_intervals\": [\"4h\", \"1d\"], \"ret_windows\": [1, 6, 12, 24, 48], \"rsi_period\": 14, \"target_threshold\": 0.0025, \"vol_windows\": [12, 48]}",
+  "model_config": "{\"colsample_bytree\": 0.7, \"gamma\": 0.2, \"learning_rate\": 0.07, \"max_depth\": 5, \"min_child_weight\": 5, \"n_estimators\": 250, \"subsample\": 0.7}",
+  "nb_windows": 4,
+  "total_trades": 8258,
+  "hit_rate": 0.7052555098086704,
+  "avg_trade_return": 0.008588951920032943,
+  "strategy_factor": 2.451551009491266e+30,
+  "market_factor": 2510.2653940139658,
+  "max_drawdown": 0.15271667822194246,
+  "objective_score": 70.13083136327153
+}
