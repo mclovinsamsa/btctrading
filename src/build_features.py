@@ -31,7 +31,10 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return atr
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy().sort_values("open_time")
+    df = df.copy()
+    df["open_time"] = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
+    df["close_time"] = pd.to_datetime(df["close_time"], utc=True, errors="coerce")
+    df = df.dropna(subset=["open_time", "close_time"]).sort_values("open_time")
 
     # Momentum
     df["ret_1"] = df["close"].pct_change(1)
@@ -88,6 +91,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = pd.read_csv(INPUT_PATH, parse_dates=["open_time", "close_time"])
+    df["open_time"] = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
+    df["close_time"] = pd.to_datetime(df["close_time"], utc=True, errors="coerce")
     feat_df = build_features(df)
     feat_df.to_csv(OUTPUT_PATH, index=False)
 
