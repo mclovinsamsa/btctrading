@@ -6,7 +6,8 @@ REPO_URL="${REPO_URL:-https://github.com/mclovinsamsa/btctrading.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 PROJECT_DIR="${PROJECT_DIR:-$WORKSPACE_DIR/btctrading}"
-VENV_DIR="${VENV_DIR:-$PROJECT_DIR/.venv}"
+VENV_DIR="${VENV_DIR:-$PROJECT_DIR/venv}"
+LEGACY_VENV_DIR="${LEGACY_VENV_DIR:-$PROJECT_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 JUPYTER_TOKEN="${JUPYTER_TOKEN:-}"
@@ -20,6 +21,11 @@ POST_SETUP_COMMAND="${POST_SETUP_COMMAND:-}"
 TORCH_VERSION="${TORCH_VERSION:-2.8.0}"
 TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
 SKIP_TORCH_INSTALL="${SKIP_TORCH_INSTALL:-0}"
+FINAL_VALIDATION_DEVICE="${FINAL_VALIDATION_DEVICE:-cuda}"
+FINAL_VALIDATION_HOLDOUT_RATIO="${FINAL_VALIDATION_HOLDOUT_RATIO:-0.2}"
+FINAL_VALIDATION_FEE="${FINAL_VALIDATION_FEE:-0.0004}"
+FINAL_VALIDATION_SLIPPAGE="${FINAL_VALIDATION_SLIPPAGE:-0.0008}"
+FINAL_VALIDATION_WF_WINDOWS="${FINAL_VALIDATION_WF_WINDOWS:-4}"
 
 log() {
     echo "[bootstrap] $*"
@@ -85,6 +91,10 @@ setup_venv() {
     if [[ ! -d "$VENV_DIR" ]]; then
         log "Creation du virtualenv dans $VENV_DIR"
         "$PYTHON_BIN" -m venv "$VENV_DIR"
+    fi
+
+    if [[ "$LEGACY_VENV_DIR" != "$VENV_DIR" ]]; then
+        ln -sfn "$VENV_DIR" "$LEGACY_VENV_DIR"
     fi
 
     # shellcheck disable=SC1091
@@ -214,6 +224,24 @@ EOF
     chmod +x "$PROJECT_DIR/start_jupyter.sh"
 }
 
+setup_validation_helpers() {
+    cat > "$PROJECT_DIR/run_final_validation.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "${VENV_DIR}/bin/activate"
+cd "${PROJECT_DIR}"
+export PYTHONDONTWRITEBYTECODE=1
+exec python -m src.research.final_validation \
+  --best-config data/funnel_best_config.json \
+  --device ${FINAL_VALIDATION_DEVICE} \
+  --holdout-ratio ${FINAL_VALIDATION_HOLDOUT_RATIO} \
+  --fee ${FINAL_VALIDATION_FEE} \
+  --slippage ${FINAL_VALIDATION_SLIPPAGE} \
+  --wf-windows ${FINAL_VALIDATION_WF_WINDOWS}
+EOF
+    chmod +x "$PROJECT_DIR/run_final_validation.sh"
+}
+
 prepare_project_data() {
     if [[ "$PREPARE_DATA" != "1" ]]; then
         log "Preparation des donnees ignoree"
@@ -273,6 +301,7 @@ main() {
     download_and_extract "$MODEL_ARCHIVE_URL" "$PROJECT_DIR/models"
     download_and_extract "$DATA_ARCHIVE_URL" "$PROJECT_DIR/data"
     setup_jupyter_config
+    setup_validation_helpers
     prepare_project_data
     run_post_setup
     print_summary
